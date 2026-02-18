@@ -174,11 +174,6 @@ local function autosave_markdown()
   end
 end
 
--- Setup function for user configuration
-function M.setup(opts)
-  M.config = vim.tbl_deep_extend("force", M.config, opts or {})
-end
-
 -- Enable the plugin
 function M.enable()
   M.config.enabled = true
@@ -189,34 +184,40 @@ function M.disable()
   M.config.enabled = false
 end
 
--- Create autocommand to trigger on entering normal mode
-vim.api.nvim_create_autocmd("ModeChanged", {
-  pattern = "*:n",  -- Trigger when entering normal mode
-  callback = function()
-    autosave_markdown()
-  end,
-  group = vim.api.nvim_create_augroup("AutoSaverMd", { clear = true })
-})
+-- Setup function for user configuration
+function M.setup(opts)
+  -- Merge user configuration with defaults
+  M.config = vim.tbl_deep_extend("force", M.config, opts or {})
 
--- Create user commands
-vim.api.nvim_create_user_command("AutoSaverEnable", function()
-  M.enable()
-  vim.notify("autosaver: Enabled", vim.log.levels.INFO)
-end, {})
+  -- Create autocommand to trigger on entering normal mode
+  vim.api.nvim_create_autocmd("ModeChanged", {
+    pattern = "*:n",  -- Trigger when entering normal mode
+    callback = function()
+      autosave_markdown()
+    end,
+    group = vim.api.nvim_create_augroup("AutoSaverMd", { clear = true })
+  })
 
-vim.api.nvim_create_user_command("AutoSaverDisable", function()
-  M.disable()
-  vim.notify("autosaver: Disabled", vim.log.levels.INFO)
-end, {})
-
-vim.api.nvim_create_user_command("AutoSaverToggle", function()
-  if M.config.enabled then
-    M.disable()
-    vim.notify("autosaver: Disabled", vim.log.levels.INFO)
-  else
+  -- Create user commands
+  vim.api.nvim_create_user_command("AutoSaverEnable", function()
     M.enable()
     vim.notify("autosaver: Enabled", vim.log.levels.INFO)
-  end
-end, {})
+  end, {})
+
+  vim.api.nvim_create_user_command("AutoSaverDisable", function()
+    M.disable()
+    vim.notify("autosaver: Disabled", vim.log.levels.INFO)
+  end, {})
+
+  vim.api.nvim_create_user_command("AutoSaverToggle", function()
+    if M.config.enabled then
+      M.disable()
+      vim.notify("autosaver: Disabled", vim.log.levels.INFO)
+    else
+      M.enable()
+      vim.notify("autosaver: Enabled", vim.log.levels.INFO)
+    end
+  end, {})
+end
 
 return M

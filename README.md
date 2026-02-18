@@ -14,14 +14,37 @@ A Neovim plugin that automatically commits and pushes markdown files to git when
 
 ### Using [lazy.nvim](https://github.com/folke/lazy.nvim)
 
+**Simple (with defaults):**
 ```lua
 {
   dir = "/home/servus/Documents/autosaver",  -- or wherever you clone this repo
+  ft = "markdown",  -- Only load for markdown files
+  opts = {},  -- Uses default configuration
+}
+```
+
+**With custom configuration:**
+```lua
+{
+  dir = "/home/servus/Documents/autosaver",  -- or wherever you clone this repo
+  ft = "markdown",  -- Only load for markdown files
+  opts = {
+    enabled = true,        -- Enable on startup
+    silent = false,        -- Show notifications
+    file_pattern = "%.md$" -- Only .md files (lua pattern)
+  }
+}
+```
+
+**Alternative using config function:**
+```lua
+{
+  dir = "/home/servus/Documents/autosaver",
+  ft = "markdown",
   config = function()
-    require("autosaver").setup({
-      enabled = true,        -- Enable on startup
-      silent = false,        -- Show notifications
-      file_pattern = "%.md$" -- Only .md files (lua pattern)
+    require("nvim-md-git-autosave").setup({
+      enabled = true,
+      silent = false,
     })
   end
 }
@@ -33,7 +56,7 @@ A Neovim plugin that automatically commits and pushes markdown files to git when
 use {
   '/home/servus/Documents/autosaver',
   config = function()
-    require('autosaver').setup()
+    require('nvim-md-git-autosave').setup()
   end
 }
 ```
@@ -53,7 +76,7 @@ use {
 Default configuration:
 
 ```lua
-require('autosaver').setup({
+require('nvim-md-git-autosave').setup({
   enabled = true,          -- Enable/disable the plugin
   file_pattern = "%.md$",  -- Lua pattern to match files (default: markdown)
   git_add = true,          -- Run git add
@@ -100,7 +123,7 @@ The plugin works automatically once installed. Every time you enter normal mode 
 To auto-commit different file types:
 
 ```lua
-require('autosaver').setup({
+require('nvim-md-git-autosave').setup({
   file_pattern = "%.txt$"  -- Text files
 })
 ```
@@ -108,7 +131,7 @@ require('autosaver').setup({
 Or multiple patterns (you'll need to modify the plugin slightly):
 
 ```lua
-require('autosaver').setup({
+require('nvim-md-git-autosave').setup({
   file_pattern = "%.md$|%.txt$"  -- Markdown or text files
 })
 ```
@@ -118,7 +141,7 @@ require('autosaver').setup({
 To suppress all notifications:
 
 ```lua
-require('autosaver').setup({
+require('nvim-md-git-autosave').setup({
   silent = true
 })
 ```
@@ -128,7 +151,7 @@ require('autosaver').setup({
 To only commit locally without pushing:
 
 ```lua
-require('autosaver').setup({
+require('nvim-md-git-autosave').setup({
   git_push = false
 })
 ```
