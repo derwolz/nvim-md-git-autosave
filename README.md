@@ -5,10 +5,14 @@ A Neovim plugin that automatically commits and pushes markdown files to git when
 ## Features
 
 - 🔄 Auto-commits markdown files when switching to normal mode
-- ⏰ Uses timestamp as commit message (format: `YYYY-MM-DD HH:MM:SS`)
+- ⚡ **Fully asynchronous** - Never blocks Neovim while saving
+- 🎯 **Smart debouncing** - Waits 2s after last change (configurable)
+- 📋 **Queue system** - Handles rapid mode changes without conflict
+- ⏰ Uses timestamp as commit message (format: `YYYY-MM-DD HH:MM:S`)
 - 🚀 Automatically pushes to remote repository
+- 🔄 SSH/HTTPS fallback for git push
 - ⚙️ Configurable and toggleable
-- 🔕 Optional silent mode
+- 🔕 Silent on success, notifies only on errors
 
 ## Installation
 
@@ -82,7 +86,8 @@ require('nvim-md-git-autosave').setup({
   git_add = true,          -- Run git add
   git_commit = true,       -- Run git commit
   git_push = true,         -- Run git push
-  silent = false,          -- Suppress notifications
+  silent = false,          -- Suppress notifications (only shows errors)
+  debounce_ms = 2000,      -- Wait time after last change before saving (ms)
 })
 ```
 
@@ -91,16 +96,25 @@ require('nvim-md-git-autosave').setup({
 The plugin works automatically once installed. Every time you enter normal mode (e.g., by pressing `Esc` or `Ctrl+[`), it will:
 
 1. Check if the current file is a markdown file
-2. Save the file
-3. Run `git add <file>`
-4. Run `git commit -m "<timestamp>"`
-5. Run `git push`
+2. Save the file immediately (fast, synchronous)
+3. Queue git operations (fully asynchronous):
+   - Run `git add <file>`
+   - Run `git commit -m "<timestamp>"`
+   - Run `git push` (with SSH/HTTPS fallback)
+
+**Async Behavior:**
+- Git operations run in the background - **Neovim never freezes**
+- Smart debouncing: waits 2 seconds after your last mode change
+- If you switch modes rapidly, only the latest change is saved
+- Queue system prevents overlapping git operations
+- Silent on success, only notifies on errors
 
 ### Commands
 
 - `:AutoSaverEnable` - Enable the plugin
 - `:AutoSaverDisable` - Disable the plugin
 - `:AutoSaverToggle` - Toggle the plugin on/off
+- `:AutoSaverStatus` - Show current status (enabled/disabled, queue size, running jobs)
 
 ### Example Workflow
 
@@ -153,6 +167,24 @@ To only commit locally without pushing:
 ```lua
 require('nvim-md-git-autosave').setup({
   git_push = false
+})
+```
+
+### Adjust Debounce Time
+
+Change how long to wait after your last edit:
+
+```lua
+require('nvim-md-git-autosave').setup({
+  debounce_ms = 5000  -- Wait 5 seconds (useful for slower connections)
+})
+```
+
+Or make it instant (save immediately, no debounce):
+
+```lua
+require('nvim-md-git-autosave').setup({
+  debounce_ms = 0  -- No debounce, save immediately
 })
 ```
 
