@@ -90,8 +90,13 @@ function perform_git_operations(save_data)
           git_execute_async(
             { "git", "commit", "-m", timestamp },
             function(commit_success, commit_output, commit_code)
-              -- Allow "nothing to commit" as success
-              if not commit_success and not commit_output:match("nothing to commit") then
+              -- Allow "nothing to commit" and "up to date" as non-errors
+              if not commit_success then
+                if commit_output:match("nothing to commit") or commit_output:match("up to date") or commit_output:match("up%-to%-date") then
+                  current_job = nil
+                  process_queue()
+                  return
+                end
                 vim.notify("autosaver: git commit failed - " .. commit_output, vim.log.levels.ERROR)
                 current_job = nil
                 process_queue()
@@ -146,6 +151,13 @@ function perform_git_push(filepath, filename, timestamp)
             return
           end
 
+          -- "Everything up-to-date" is not an error
+          if push_output:match("up to date") or push_output:match("up%-to%-date") then
+            current_job = nil
+            process_queue()
+            return
+          end
+
           -- Push failed, try fallback
           handle_push_fallback(remote_url, original_url, filepath, filename, timestamp, push_output)
         end
@@ -187,8 +199,8 @@ function handle_push_fallback(remote_url, original_url, filepath, filename, time
       git_execute_async(
         { "git", "push" },
         function(retry_success, retry_output, retry_code)
-          if retry_success then
-            -- Success with fallback!
+          if retry_success or retry_output:match("up to date") or retry_output:match("up%-to%-date") then
+            -- Success (or already up to date) with fallback
             current_job = nil
             process_queue()
           else
