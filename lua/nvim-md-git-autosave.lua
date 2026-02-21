@@ -19,8 +19,8 @@ local current_job = nil
 local debounce_timer = nil
 
 -- Function to check if file is in a git repository (sync, fast check)
-local function is_git_repo()
-  local result = vim.fn.system("git rev-parse --is-inside-work-tree 2>/dev/null")
+local function is_git_repo(dir)
+  local result = vim.fn.system("git -C " .. vim.fn.shellescape(dir) .. " rev-parse --is-inside-work-tree 2>/dev/null")
   return vim.v.shell_error == 0 and result:match("true") ~= nil
 end
 
@@ -29,9 +29,9 @@ local function get_timestamp()
   return os.date("%Y-%m-%d %H:%M:%S")
 end
 
--- Async function to execute git command
-local function git_execute_async(cmd, callback)
-  vim.system(cmd, { text = true }, function(obj)
+-- Async function to execute git command in a specific directory
+local function git_execute_async(cmd, cwd, callback)
+  vim.system(cmd, { text = true, cwd = cwd }, function(obj)
     vim.schedule(function()
       callback(obj.code == 0, obj.stdout or obj.stderr or "", obj.code)
     end)
@@ -72,11 +72,13 @@ function perform_git_operations(save_data)
   local filepath = save_data.filepath
   local filename = save_data.filename
   local timestamp = save_data.timestamp
+  local dir = save_data.dir
 
   -- Step 1: Git add
   if M.config.git_add then
     git_execute_async(
       { "git", "add", filepath },
+      dir,
       function(success, output, code)
         if not success then
           vim.notify("autosaver: git add failed - " .. output, vim.log.levels.ERROR)
@@ -89,6 +91,7 @@ function perform_git_operations(save_data)
         if M.config.git_commit then
           git_execute_async(
             { "git", "commit", "-m", timestamp },
+            dir,
             function(commit_success, commit_output, commit_code)
               -- Allow "nothing to commit" and "up to date" as non-errors
               if not commit_success then
@@ -105,7 +108,7 @@ function perform_git_operations(save_data)
 
               -- Step 3: Git push
               if M.config.git_push then
-                perform_git_push(filepath, filename, timestamp)
+                perform_git_push(filepath, filename, timestamp, dir)
               else
                 current_job = nil
                 process_queue()
@@ -125,10 +128,11 @@ function perform_git_operations(save_data)
 end
 
 -- Git push with SSH/HTTPS fallback (fully async)
-function perform_git_push(filepath, filename, timestamp)
+function perform_git_push(filepath, filename, timestamp, dir)
   -- Get remote URL first
   git_execute_async(
     { "git", "remote", "get-url", "origin" },
+    dir,
     function(success, remote_url, code)
       if not success then
         vim.notify("autosaver: Failed to get remote URL - " .. remote_url, vim.log.levels.ERROR)
@@ -143,6 +147,7 @@ function perform_git_push(filepath, filename, timestamp)
       -- Try initial push
       git_execute_async(
         { "git", "push" },
+        dir,
         function(push_success, push_output, push_code)
           if push_success then
             -- Success! Only notify on error (silent on success)
@@ -159,7 +164,7 @@ function perform_git_push(filepath, filename, timestamp)
           end
 
           -- Push failed, try fallback
-          handle_push_fallback(remote_url, original_url, filepath, filename, timestamp, push_output)
+          handle_push_fallback(remote_url, original_url, filepath, filename, timestamp, push_output, dir)
         end
       )
     end
@@ -167,7 +172,7 @@ function perform_git_push(filepath, filename, timestamp)
 end
 
 -- Handle push fallback from SSH to HTTPS or vice versa
-function handle_push_fallback(remote_url, original_url, filepath, filename, timestamp, error_msg)
+function handle_push_fallback(remote_url, original_url, filepath, filename, timestamp, error_msg, dir)
   local fallback_url = nil
 
   -- If HTTPS, try SSH
@@ -187,6 +192,7 @@ function handle_push_fallback(remote_url, original_url, filepath, filename, time
   -- Set new remote URL and try again
   git_execute_async(
     { "git", "remote", "set-url", "origin", fallback_url },
+    dir,
     function(set_success, set_output, set_code)
       if not set_success then
         vim.notify("autosaver: Failed to change remote URL - " .. set_output, vim.log.levels.ERROR)
@@ -198,6 +204,7 @@ function handle_push_fallback(remote_url, original_url, filepath, filename, time
       -- Try push with new URL
       git_execute_async(
         { "git", "push" },
+        dir,
         function(retry_success, retry_output, retry_code)
           if retry_success or retry_output:match("up to date") or retry_output:match("up%-to%-date") then
             -- Success (or already up to date) with fallback
@@ -207,6 +214,7 @@ function handle_push_fallback(remote_url, original_url, filepath, filename, time
             -- Both failed, restore original and notify
             git_execute_async(
               { "git", "remote", "set-url", "origin", original_url },
+              dir,
               function()
                 vim.notify("autosaver: git push failed (tried both SSH and HTTPS) - " .. retry_output, vim.log.levels.ERROR)
                 current_job = nil
@@ -221,7 +229,7 @@ function handle_push_fallback(remote_url, original_url, filepath, filename, time
 end
 
 -- Queue a save operation
-local function queue_save(filepath, filename)
+local function queue_save(filepath, filename, dir)
   -- Cancel existing debounce timer
   if debounce_timer then
     debounce_timer:stop()
@@ -233,6 +241,7 @@ local function queue_save(filepath, filename)
     table.insert(save_queue, {
       filepath = filepath,
       filename = filename,
+      dir = dir,
       timestamp = get_timestamp(),
     })
 
@@ -251,6 +260,7 @@ local function autosave_markdown()
 
   local filepath = vim.fn.expand("%:p")
   local filename = vim.fn.expand("%:t")
+  local dir = vim.fn.expand("%:p:h")
 
   -- Check if file matches pattern (default: .md files)
   if not filename:match(M.config.file_pattern) then
@@ -262,7 +272,7 @@ local function autosave_markdown()
     return
   end
 
-  if not is_git_repo() then
+  if not is_git_repo(dir) then
     return  -- Silent fail if not in repo
   end
 
@@ -270,7 +280,7 @@ local function autosave_markdown()
   vim.cmd("silent! write")
 
   -- Queue the git operations (async)
-  queue_save(filepath, filename)
+  queue_save(filepath, filename, dir)
 end
 
 -- Enable the plugin
