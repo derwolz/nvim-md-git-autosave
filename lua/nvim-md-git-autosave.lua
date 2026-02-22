@@ -74,21 +74,46 @@ function perform_git_operations(save_data)
   local timestamp = save_data.timestamp
   local dir = save_data.dir
 
-  -- Step 1: Git add
-  if M.config.git_add then
-    git_execute_async(
-      { "git", "add", filepath },
-      dir,
-      function(success, output, code)
-        if not success then
-          vim.notify("autosaver: git add failed - " .. output, vim.log.levels.ERROR)
+  -- Step 1: Git pull (sync with remote before committing)
+  git_execute_async(
+    { "git", "pull", "--rebase", "--autostash" },
+    dir,
+    function(pull_success, pull_output, pull_code)
+      if not pull_success then
+        -- Allow "no tracking" or "no remote" as non-errors (local-only repos)
+        if not (pull_output:match("no tracking information") or pull_output:match("There is no tracking information")) then
+          vim.notify("autosaver: git pull failed - " .. pull_output, vim.log.levels.ERROR)
           current_job = nil
           process_queue()
           return
         end
+      end
 
-        -- Step 2: Git commit
-        if M.config.git_commit then
+      -- Step 2: Git add
+      if not M.config.git_add then
+        current_job = nil
+        process_queue()
+        return
+      end
+
+      git_execute_async(
+        { "git", "add", filepath },
+        dir,
+        function(success, output, code)
+          if not success then
+            vim.notify("autosaver: git add failed - " .. output, vim.log.levels.ERROR)
+            current_job = nil
+            process_queue()
+            return
+          end
+
+          -- Step 3: Git commit
+          if not M.config.git_commit then
+            current_job = nil
+            process_queue()
+            return
+          end
+
           git_execute_async(
             { "git", "commit", "-m", timestamp },
             dir,
@@ -106,7 +131,7 @@ function perform_git_operations(save_data)
                 return
               end
 
-              -- Step 3: Git push
+              -- Step 4: Git push
               if M.config.git_push then
                 perform_git_push(filepath, filename, timestamp, dir)
               else
@@ -115,16 +140,10 @@ function perform_git_operations(save_data)
               end
             end
           )
-        else
-          current_job = nil
-          process_queue()
         end
-      end
-    )
-  else
-    current_job = nil
-    process_queue()
-  end
+      )
+    end
+  )
 end
 
 -- Git push with SSH/HTTPS fallback (fully async)
