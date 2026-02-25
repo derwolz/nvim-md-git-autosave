@@ -18,10 +18,74 @@ local save_queue = {}
 local current_job = nil
 local debounce_timer = nil
 
--- Function to check if file is in a git repository (sync, fast check)
+-- Find the .git directory by walking up from the given path
+local function find_git_dir(dir)
+  local current = dir
+  while current and current ~= "" do
+    local git_path = current .. "/.git"
+    if vim.fn.isdirectory(git_path) == 1 then
+      return git_path
+    end
+    -- Check for .git file (submodules/worktrees use a file pointing to the real git dir)
+    if vim.fn.filereadable(git_path) == 1 then
+      return git_path
+    end
+    local parent = vim.fn.fnamemodify(current, ":h")
+    if parent == current then break end
+    current = parent
+  end
+  return nil
+end
+
+-- Check if file is in a git repository by looking for .git directory
 local function is_git_repo(dir)
-  local result = vim.fn.system("git -C " .. vim.fn.shellescape(dir) .. " rev-parse --is-inside-work-tree 2>/dev/null")
-  return vim.v.shell_error == 0 and result:match("true") ~= nil
+  return find_git_dir(dir) ~= nil
+end
+
+-- Read remote origin URL directly from .git/config
+local function get_remote_url_from_config(dir)
+  local git_dir = find_git_dir(dir)
+  if not git_dir then return nil end
+
+  -- If .git is a file (submodule/worktree), resolve the actual git dir
+  if vim.fn.filereadable(git_dir) == 1 and vim.fn.isdirectory(git_dir) == 0 then
+    local f = io.open(git_dir, "r")
+    if not f then return nil end
+    local content = f:read("*a")
+    f:close()
+    local pointed = content:match("gitdir:%s*(.+)")
+    if pointed then
+      pointed = pointed:gsub("%s+$", "")
+      -- Resolve relative paths
+      if not pointed:match("^/") then
+        pointed = vim.fn.fnamemodify(git_dir, ":h") .. "/" .. pointed
+      end
+      git_dir = pointed
+    end
+  end
+
+  local config_path = git_dir .. "/config"
+  local f = io.open(config_path, "r")
+  if not f then return nil end
+  local content = f:read("*a")
+  f:close()
+
+  -- Parse the [remote "origin"] section for url
+  local in_remote_origin = false
+  for line in content:gmatch("[^\n]+") do
+    if line:match('%[remote "origin"%]') then
+      in_remote_origin = true
+    elseif line:match("^%[") then
+      in_remote_origin = false
+    elseif in_remote_origin then
+      local url = line:match("^%s*url%s*=%s*(.+)%s*$")
+      if url then
+        return url:gsub("%s+$", "")
+      end
+    end
+  end
+
+  return nil
 end
 
 -- Function to get current timestamp
@@ -74,118 +138,112 @@ function perform_git_operations(save_data)
   local timestamp = save_data.timestamp
   local dir = save_data.dir
 
-  -- Step 1: Git pull (sync with remote before committing)
-  git_execute_async(
-    { "git", "pull", "--rebase", "--autostash" },
-    dir,
-    function(pull_success, pull_output, pull_code)
-      if not pull_success then
-        -- Allow "no tracking" or "no remote" as non-errors (local-only repos)
-        if not (pull_output:match("no tracking information") or pull_output:match("There is no tracking information")) then
-          vim.notify("autosaver: git pull failed - " .. pull_output, vim.log.levels.ERROR)
+  -- Check for remote URL from .git/config (no subprocess needed)
+  local remote_url = get_remote_url_from_config(dir)
+  local has_remote = remote_url ~= nil
+
+  -- Helper to continue after optional pull
+  local function do_add_commit_push()
+    -- Step 2: Git add
+    if not M.config.git_add then
+      current_job = nil
+      process_queue()
+      return
+    end
+
+    git_execute_async(
+      { "git", "add", filepath },
+      dir,
+      function(success, output, code)
+        if not success then
+          vim.notify("autosaver: git add failed - " .. output, vim.log.levels.ERROR)
           current_job = nil
           process_queue()
           return
         end
-      end
 
-      -- Step 2: Git add
-      if not M.config.git_add then
-        current_job = nil
-        process_queue()
-        return
-      end
+        -- Step 3: Git commit
+        if not M.config.git_commit then
+          current_job = nil
+          process_queue()
+          return
+        end
 
-      git_execute_async(
-        { "git", "add", filepath },
-        dir,
-        function(success, output, code)
-          if not success then
-            vim.notify("autosaver: git add failed - " .. output, vim.log.levels.ERROR)
-            current_job = nil
-            process_queue()
-            return
-          end
-
-          -- Step 3: Git commit
-          if not M.config.git_commit then
-            current_job = nil
-            process_queue()
-            return
-          end
-
-          git_execute_async(
-            { "git", "commit", "-m", timestamp },
-            dir,
-            function(commit_success, commit_output, commit_code)
-              -- Allow "nothing to commit" and "up to date" as non-errors
-              if not commit_success then
-                if commit_output:match("nothing to commit") or commit_output:match("up to date") or commit_output:match("up%-to%-date") then
-                  current_job = nil
-                  process_queue()
-                  return
-                end
-                vim.notify("autosaver: git commit failed - " .. commit_output, vim.log.levels.ERROR)
+        git_execute_async(
+          { "git", "commit", "-m", timestamp },
+          dir,
+          function(commit_success, commit_output, commit_code)
+            -- Allow "nothing to commit" and "up to date" as non-errors
+            if not commit_success then
+              if commit_output:match("nothing to commit") or commit_output:match("up to date") or commit_output:match("up%-to%-date") then
                 current_job = nil
                 process_queue()
                 return
               end
-
-              -- Step 4: Git push
-              if M.config.git_push then
-                perform_git_push(filepath, filename, timestamp, dir)
-              else
-                current_job = nil
-                process_queue()
-              end
+              vim.notify("autosaver: git commit failed - " .. commit_output, vim.log.levels.ERROR)
+              current_job = nil
+              process_queue()
+              return
             end
-          )
+
+            -- Step 4: Git push (only if remote exists)
+            if M.config.git_push and has_remote then
+              perform_git_push(filepath, filename, timestamp, dir, remote_url)
+            else
+              current_job = nil
+              process_queue()
+            end
+          end
+        )
+      end
+    )
+  end
+
+  -- Step 1: Git pull (only if remote exists)
+  if has_remote then
+    git_execute_async(
+      { "git", "pull", "--rebase", "--autostash" },
+      dir,
+      function(pull_success, pull_output, pull_code)
+        if not pull_success then
+          -- Non-fatal pull errors: just warn and continue with commit
+          if not M.config.silent then
+            vim.notify("autosaver: git pull failed (continuing) - " .. pull_output, vim.log.levels.WARN)
+          end
         end
-      )
-    end
-  )
+        do_add_commit_push()
+      end
+    )
+  else
+    -- No remote, skip pull entirely
+    do_add_commit_push()
+  end
 end
 
 -- Git push with SSH/HTTPS fallback (fully async)
-function perform_git_push(filepath, filename, timestamp, dir)
-  -- Get remote URL first
+function perform_git_push(filepath, filename, timestamp, dir, remote_url)
+  local original_url = remote_url
+
+  -- Try initial push
   git_execute_async(
-    { "git", "remote", "get-url", "origin" },
+    { "git", "push" },
     dir,
-    function(success, remote_url, code)
-      if not success then
-        vim.notify("autosaver: Failed to get remote URL - " .. remote_url, vim.log.levels.ERROR)
+    function(push_success, push_output, push_code)
+      if push_success then
         current_job = nil
         process_queue()
         return
       end
 
-      remote_url = remote_url:gsub("%s+$", "")  -- trim whitespace
-      local original_url = remote_url
+      -- "Everything up-to-date" is not an error
+      if push_output:match("up to date") or push_output:match("up%-to%-date") then
+        current_job = nil
+        process_queue()
+        return
+      end
 
-      -- Try initial push
-      git_execute_async(
-        { "git", "push" },
-        dir,
-        function(push_success, push_output, push_code)
-          if push_success then
-            -- Success! Only notify on error (silent on success)
-            current_job = nil
-            process_queue()
-            return
-          end
-
-          -- "Everything up-to-date" is not an error
-          if push_output:match("up to date") or push_output:match("up%-to%-date") then
-            current_job = nil
-            process_queue()
-            return
-          end
-
-          -- Push failed, try fallback
-          handle_push_fallback(remote_url, original_url, filepath, filename, timestamp, push_output, dir)
-        end
-      )
+      -- Push failed, try fallback
+      handle_push_fallback(remote_url, original_url, filepath, filename, timestamp, push_output, dir)
     end
   )
 end
